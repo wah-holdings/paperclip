@@ -565,6 +565,17 @@ export function buildHostServices(
     return rows.slice(offset, offset + limit);
   };
 
+  const authorizationAuditDecisionCondition = (decisionFilter: string) => {
+    const conditions = [
+      sql`lower(${activityLog.details}->>'decision') = ${decisionFilter}`,
+      decisionFilter === "allow" ? sql`left(coalesce(${activityLog.details}->>'reason', ''), 6) = 'allow_'` : undefined,
+      decisionFilter === "deny" ? sql`left(coalesce(${activityLog.details}->>'reason', ''), 5) = 'deny_'` : undefined,
+      decisionFilter === "allow" ? sql`${activityLog.details}->>'allowed' = 'true'` : undefined,
+      decisionFilter === "deny" ? sql`${activityLog.details}->>'allowed' = 'false'` : undefined,
+    ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    return sql`(${sql.join(conditions, sql` OR `)})`;
+  };
+
   /**
    * Plugins are instance-wide in the current runtime. Company IDs are still
    * required for company-scoped data access, but there is no per-company
@@ -2472,7 +2483,7 @@ export function buildHostServices(
             assigneeAgentId: params.target.assigneeAgentId ?? null,
             assigneeUserId: params.target.assigneeUserId ?? null,
           },
-        }) as any;
+        });
       },
       async explainAssignment(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2488,13 +2499,16 @@ export function buildHostServices(
             assigneeAgentId: params.target.assigneeAgentId ?? null,
             assigneeUserId: params.target.assigneeUserId ?? null,
           },
-        }) as any;
+        });
       },
       async searchAudit(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const limit = Math.min(Math.max(Number(params.limit ?? 50), 1), 100);
         const offset = Math.max(Number(params.offset ?? 0), 0);
+        const decisionFilter = typeof params.decision === "string" && params.decision.trim()
+          ? params.decision.trim().toLowerCase()
+          : null;
         const conditions = [
           eq(activityLog.companyId, companyId),
           params.action ? eq(activityLog.action, params.action) : undefined,
@@ -2502,6 +2516,7 @@ export function buildHostServices(
           params.actorId ? eq(activityLog.actorId, params.actorId) : undefined,
           params.entityType ? eq(activityLog.entityType, params.entityType) : undefined,
           params.entityId ? eq(activityLog.entityId, params.entityId) : undefined,
+          decisionFilter ? authorizationAuditDecisionCondition(decisionFilter) : undefined,
         ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
         const rows = await db
           .select()
@@ -2510,27 +2525,7 @@ export function buildHostServices(
           .orderBy(desc(activityLog.createdAt))
           .limit(limit)
           .offset(offset);
-        const decisionFilter = typeof params.decision === "string" && params.decision.trim()
-          ? params.decision.trim().toLowerCase()
-          : null;
-        const filteredRows = decisionFilter
-          ? rows.filter((row) => {
-            const details = row.details && typeof row.details === "object"
-              ? row.details as Record<string, unknown>
-              : {};
-            const decision = typeof details.decision === "string"
-              ? details.decision
-              : typeof details.reason === "string" && details.reason.startsWith("allow_")
-                ? "allow"
-                : typeof details.reason === "string" && details.reason.startsWith("deny_")
-                  ? "deny"
-                  : typeof details.allowed === "boolean"
-                    ? details.allowed ? "allow" : "deny"
-                    : "";
-            return decision.toLowerCase() === decisionFilter;
-          })
-          : rows;
-        return filteredRows.map((row) => ({
+        return rows.map((row) => ({
           ...row,
           details: row.details && typeof row.details === "object"
             ? sanitizeRecord(row.details)

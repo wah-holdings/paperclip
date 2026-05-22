@@ -435,6 +435,29 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(denied.explanation).toContain("does not cover the requested scope");
   });
 
+  it("treats unknown grant scope metadata as unconstrained", async () => {
+    const company = await createCompany(db, "UnknownScopeMetadata");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign_scope", {
+      note: "CEO-approved",
+    });
+
+    const decision = await authorizationService(db).decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      action: "tasks:assign",
+      permissionKey: "tasks:assign_scope",
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      grant: { permissionKey: "tasks:assign_scope" },
+    });
+  });
+
   it("allows scoped assignment to agents inside a managed subtree only", async () => {
     const company = await createCompany(db, "SubtreeScope");
     const actorAgent = await createAgent(db, company.id);

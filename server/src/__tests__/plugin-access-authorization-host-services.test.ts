@@ -134,6 +134,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
         entityType: "issue",
         entityId: "issue-1",
         details: { decision: "allow", secret: "do-not-leak" },
+        createdAt: new Date("2026-01-02T00:00:00Z"),
       },
       {
         companyId: company.id,
@@ -143,6 +144,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
         entityType: "issue",
         entityId: "issue-2",
         details: { reason: "deny_scope" },
+        createdAt: new Date("2026-01-03T00:00:00Z"),
       },
     ]);
 
@@ -151,6 +153,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
         companyId: company.id,
         action: "authorization.assignment_preview",
         decision: "allow",
+        limit: 1,
       }),
       services.authorization.searchAudit({
         companyId: company.id,
