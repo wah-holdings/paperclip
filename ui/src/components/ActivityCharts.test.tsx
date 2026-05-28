@@ -99,11 +99,16 @@ describe("ActivityCharts", () => {
         runs={[
           createRun({ id: "run-success", status: "succeeded" }),
           createRun({ id: "run-failed", status: "failed" }),
+          createRun({ id: "run-timed-out", status: "timed_out" }),
         ]}
       />,
     );
 
     expect(container.textContent).not.toContain("No runs yet");
-    expect(container.querySelector("[title='2026-04-20: 2 runs']")).not.toBeNull();
+    expect(
+      container.querySelector(
+        "[title='2026-04-20: 3 total runs; 1 failed; 1 succeeded; 0 cancelled; 0 running/queued; 1 timed out; Window UTC: 2026-04-20T00:00:00.000Z to 2026-04-20T23:59:59.999Z']",
+      ),
+    ).not.toBeNull();
   });
 });

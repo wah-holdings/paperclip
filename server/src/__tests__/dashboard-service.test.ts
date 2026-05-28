@@ -156,14 +156,24 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(todayBucket).toMatchObject({
       succeeded: 105,
       failed: 0,
+      cancelled: 0,
+      running: 0,
+      timedOut: 0,
       other: 0,
       total: 105,
+      windowStart: `${utcDateKey(today)}T00:00:00.000Z`,
+      windowEnd: `${utcDateKey(today)}T23:59:59.999Z`,
     });
     expect(weekAgoBucket).toMatchObject({
       succeeded: 0,
-      failed: 2,
-      other: 1,
+      failed: 1,
+      cancelled: 1,
+      running: 0,
+      timedOut: 1,
+      other: 0,
       total: 3,
+      windowStart: `${utcDateKey(weekAgo)}T00:00:00.000Z`,
+      windowEnd: `${utcDateKey(weekAgo)}T23:59:59.999Z`,
     });
   });
 });

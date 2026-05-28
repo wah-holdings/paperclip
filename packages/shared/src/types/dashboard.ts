@@ -1,7 +1,12 @@
 export interface DashboardRunActivityDay {
   date: string;
+  windowStart: string;
+  windowEnd: string;
   succeeded: number;
   failed: number;
+  cancelled: number;
+  running: number;
+  timedOut: number;
   other: number;
   total: number;
 }

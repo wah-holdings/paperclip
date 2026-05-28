@@ -8,6 +8,7 @@ import type {
   CompanySecret,
   CompanySecretBinding,
   CompanySecretProviderConfig,
+  DashboardRunActivityDay,
   DashboardSummary,
   ExecutionWorkspace,
   Goal,
@@ -29,6 +30,24 @@ const recent = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_
 const storybookRepoRoot = "~/paperclip";
 const storybookWorkspaceRoot = `${storybookRepoRoot}/.paperclip/workspaces`;
 const storybookWorktreeRoot = `${storybookRepoRoot}/.paperclip/worktrees`;
+
+function storybookRunActivityDay(
+  date: string,
+  counts: Pick<DashboardRunActivityDay, "succeeded" | "failed" | "other" | "total">,
+): DashboardRunActivityDay {
+  return {
+    date,
+    windowStart: `${date}T00:00:00.000Z`,
+    windowEnd: `${date}T23:59:59.999Z`,
+    succeeded: counts.succeeded,
+    failed: counts.failed,
+    cancelled: 0,
+    running: 0,
+    timedOut: 0,
+    other: counts.other,
+    total: counts.total,
+  };
+}
 
 export const storybookCompanies: Company[] = [
   {
@@ -1281,20 +1300,20 @@ export const storybookDashboardSummary: DashboardSummary = {
     pausedProjects: 1,
   },
   runActivity: [
-    { date: "2026-04-07", succeeded: 4, failed: 0, other: 1, total: 5 },
-    { date: "2026-04-08", succeeded: 5, failed: 1, other: 0, total: 6 },
-    { date: "2026-04-09", succeeded: 3, failed: 0, other: 1, total: 4 },
-    { date: "2026-04-10", succeeded: 6, failed: 0, other: 0, total: 6 },
-    { date: "2026-04-11", succeeded: 4, failed: 1, other: 0, total: 5 },
-    { date: "2026-04-12", succeeded: 2, failed: 0, other: 1, total: 3 },
-    { date: "2026-04-13", succeeded: 5, failed: 0, other: 1, total: 6 },
-    { date: "2026-04-14", succeeded: 6, failed: 1, other: 0, total: 7 },
-    { date: "2026-04-15", succeeded: 4, failed: 0, other: 1, total: 5 },
-    { date: "2026-04-16", succeeded: 7, failed: 0, other: 0, total: 7 },
-    { date: "2026-04-17", succeeded: 6, failed: 1, other: 0, total: 7 },
-    { date: "2026-04-18", succeeded: 3, failed: 0, other: 1, total: 4 },
-    { date: "2026-04-19", succeeded: 5, failed: 0, other: 1, total: 6 },
-    { date: "2026-04-20", succeeded: 4, failed: 0, other: 2, total: 6 },
+    storybookRunActivityDay("2026-04-07", { succeeded: 4, failed: 0, other: 1, total: 5 }),
+    storybookRunActivityDay("2026-04-08", { succeeded: 5, failed: 1, other: 0, total: 6 }),
+    storybookRunActivityDay("2026-04-09", { succeeded: 3, failed: 0, other: 1, total: 4 }),
+    storybookRunActivityDay("2026-04-10", { succeeded: 6, failed: 0, other: 0, total: 6 }),
+    storybookRunActivityDay("2026-04-11", { succeeded: 4, failed: 1, other: 0, total: 5 }),
+    storybookRunActivityDay("2026-04-12", { succeeded: 2, failed: 0, other: 1, total: 3 }),
+    storybookRunActivityDay("2026-04-13", { succeeded: 5, failed: 0, other: 1, total: 6 }),
+    storybookRunActivityDay("2026-04-14", { succeeded: 6, failed: 1, other: 0, total: 7 }),
+    storybookRunActivityDay("2026-04-15", { succeeded: 4, failed: 0, other: 1, total: 5 }),
+    storybookRunActivityDay("2026-04-16", { succeeded: 7, failed: 0, other: 0, total: 7 }),
+    storybookRunActivityDay("2026-04-17", { succeeded: 6, failed: 1, other: 0, total: 7 }),
+    storybookRunActivityDay("2026-04-18", { succeeded: 3, failed: 0, other: 1, total: 4 }),
+    storybookRunActivityDay("2026-04-19", { succeeded: 5, failed: 0, other: 1, total: 6 }),
+    storybookRunActivityDay("2026-04-20", { succeeded: 4, failed: 0, other: 2, total: 6 }),
   ],
 };
 

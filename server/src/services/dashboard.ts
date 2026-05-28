@@ -10,6 +10,21 @@ function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+function runActivityDayBucket(date: string) {
+  return {
+    date,
+    windowStart: `${date}T00:00:00.000Z`,
+    windowEnd: `${date}T23:59:59.999Z`,
+    succeeded: 0,
+    failed: 0,
+    cancelled: 0,
+    running: 0,
+    timedOut: 0,
+    other: 0,
+    total: 0,
+  };
+}
+
 export function getUtcMonthStart(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
@@ -113,17 +128,17 @@ export function dashboardService(db: Db) {
         .groupBy(runActivityDayExpr, heartbeatRuns.status);
 
       const runActivity = new Map(
-        runActivityDays.map((date) => [
-          date,
-          { date, succeeded: 0, failed: 0, other: 0, total: 0 },
-        ]),
+        runActivityDays.map((date) => [date, runActivityDayBucket(date)]),
       );
       for (const row of runActivityRows) {
         const bucket = runActivity.get(row.date);
         if (!bucket) continue;
         const count = Number(row.count);
         if (row.status === "succeeded") bucket.succeeded += count;
-        else if (row.status === "failed" || row.status === "timed_out") bucket.failed += count;
+        else if (row.status === "failed") bucket.failed += count;
+        else if (row.status === "cancelled") bucket.cancelled += count;
+        else if (row.status === "running" || row.status === "queued") bucket.running += count;
+        else if (row.status === "timed_out") bucket.timedOut += count;
         else bucket.other += count;
         bucket.total += count;
       }

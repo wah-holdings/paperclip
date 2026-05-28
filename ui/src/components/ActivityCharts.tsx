@@ -15,6 +15,35 @@ function formatDayLabel(dateStr: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function createRunActivityBucket(date: string): DashboardRunActivityDay {
+  return {
+    date,
+    windowStart: `${date}T00:00:00.000Z`,
+    windowEnd: `${date}T23:59:59.999Z`,
+    succeeded: 0,
+    failed: 0,
+    cancelled: 0,
+    running: 0,
+    timedOut: 0,
+    other: 0,
+    total: 0,
+  };
+}
+
+function formatRunActivityTooltip(entry: DashboardRunActivityDay): string {
+  const parts = [
+    `${entry.date}: ${entry.total} total runs`,
+    `${entry.failed} failed`,
+    `${entry.succeeded} succeeded`,
+    `${entry.cancelled} cancelled`,
+    `${entry.running} running/queued`,
+    `${entry.timedOut} timed out`,
+  ];
+  if (entry.other > 0) parts.push(`${entry.other} other`);
+  parts.push(`Window UTC: ${entry.windowStart} to ${entry.windowEnd}`);
+  return parts.join("; ");
+}
+
 /* ---- Sub-components ---- */
 
 function DateLabels({ days }: { days: string[] }) {
@@ -65,13 +94,16 @@ type RunChartProps =
 function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivityDay[] {
   const days = getLast14Days();
   const grouped = new Map<string, DashboardRunActivityDay>();
-  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+  for (const day of days) grouped.set(day, createRunActivityBucket(day));
   for (const run of runs) {
     const day = new Date(run.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
     if (run.status === "succeeded") entry.succeeded++;
-    else if (run.status === "failed" || run.status === "timed_out") entry.failed++;
+    else if (run.status === "failed") entry.failed++;
+    else if (run.status === "cancelled") entry.cancelled++;
+    else if (run.status === "running" || run.status === "queued") entry.running++;
+    else if (run.status === "timed_out") entry.timedOut++;
     else entry.other++;
     entry.total++;
   }
@@ -98,15 +130,18 @@ export function RunActivityChart(props: RunChartProps) {
     <div>
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
+          const entry = grouped.get(day) ?? createRunActivityBucket(day);
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={formatRunActivityTooltip(entry)}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
                   {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
+                  {entry.cancelled > 0 && <div className="bg-slate-500" style={{ flex: entry.cancelled }} />}
+                  {entry.running > 0 && <div className="bg-blue-500" style={{ flex: entry.running }} />}
+                  {entry.timedOut > 0 && <div className="bg-orange-500" style={{ flex: entry.timedOut }} />}
                   {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
                 </div>
               ) : (
@@ -117,6 +152,13 @@ export function RunActivityChart(props: RunChartProps) {
         })}
       </div>
       <DateLabels days={days} />
+      <ChartLegend items={[
+        { color: "#10b981", label: "Succeeded" },
+        { color: "#ef4444", label: "Failed" },
+        { color: "#64748b", label: "Cancelled" },
+        { color: "#3b82f6", label: "Running/queued" },
+        { color: "#f97316", label: "Timed out" },
+      ]} />
     </div>
   );
 }
@@ -253,7 +295,7 @@ export function SuccessRateChart(props: RunChartProps) {
     <div>
       <div className="flex items-end gap-[3px] h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
+          const entry = grouped.get(day) ?? createRunActivityBucket(day);
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
