@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueComments,
@@ -19,6 +20,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+
+vi.mock("../services/issue-assignment-wakeup.js", () => ({
+  queueIssueAssignmentWakeup: vi.fn(),
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -44,6 +49,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
+    await db.delete(companyMemberships);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -61,7 +67,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       req.actor = actor;
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(db, { wakeup: vi.fn(async () => null) } as any));
     app.use(errorHandler);
     return app;
   }
@@ -342,6 +348,140 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       assigneeAgentId: otherAgentId,
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
+    });
+  });
+
+  it("rejects cross-company normal assignment and lets a company board admin repair a broken assignee", async () => {
+    const cadenceCompanyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const cadenceAgentId = randomUUID();
+    const foreignAgentId = randomUUID();
+    const foreignRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: cadenceCompanyId,
+        name: "Cadence",
+        issuePrefix: `C${cadenceCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Better Living",
+        issuePrefix: `B${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(companyMemberships).values({
+      companyId: cadenceCompanyId,
+      principalType: "user",
+      principalId: "board-user",
+      membershipRole: "admin",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: cadenceAgentId,
+        companyId: cadenceCompanyId,
+        name: "CadenceAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: foreignAgentId,
+        companyId: foreignCompanyId,
+        name: "ForeignAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId: foreignCompanyId,
+      agentId: foreignAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const createRes = await request(createApp(boardActor(cadenceCompanyId)))
+      .post(`/api/companies/${cadenceCompanyId}/issues`)
+      .send({
+        title: "Should not assign cross-company",
+        assigneeAgentId: foreignAgentId,
+      });
+    expect([403, 404, 422]).toContain(createRes.status);
+    expect(createRes.body.error).toBeTruthy();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: cadenceCompanyId,
+      title: "Historically broken assignee",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: foreignAgentId,
+      checkoutRunId: foreignRunId,
+      executionRunId: foreignRunId,
+      executionAgentNameKey: "foreignagent",
+      executionLockedAt: new Date(),
+    });
+
+    const repairRes = await request(createApp(boardActor(cadenceCompanyId)))
+      .post(`/api/issues/${issueId}/admin/repair-assignee`)
+      .send({ assigneeAgentId: cadenceAgentId });
+
+    expect(repairRes.status, JSON.stringify(repairRes.body)).toBe(200);
+    expect(repairRes.body.issue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: cadenceAgentId,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(repairRes.body.previous).toEqual({
+      assigneeAgentId: foreignAgentId,
+      assigneeUserId: null,
+      assigneeAgentCompanyId: foreignCompanyId,
+      checkoutRunId: foreignRunId,
+      executionRunId: foreignRunId,
+    });
+
+    const audit = await db
+      .select({
+        action: activityLog.action,
+        actorType: activityLog.actorType,
+        actorId: activityLog.actorId,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.admin_repair_assignee"))
+      .then((rows) => rows[0]);
+    expect(audit).toMatchObject({
+      action: "issue.admin_repair_assignee",
+      actorType: "user",
+      actorId: "board-user",
+      details: {
+        issueId,
+        actorUserId: "board-user",
+        previousAssigneeAgentId: foreignAgentId,
+        previousAssigneeUserId: null,
+        previousAssigneeAgentCompanyId: foreignCompanyId,
+        nextAssigneeAgentId: cadenceAgentId,
+        nextAssigneeUserId: null,
+        prevCheckoutRunId: foreignRunId,
+        prevExecutionRunId: foreignRunId,
+      },
     });
   });
 });

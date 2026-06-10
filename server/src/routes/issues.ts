@@ -141,6 +141,27 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const adminRepairIssueAssigneeSchema = z.object({
+  assigneeAgentId: z.string().uuid().optional().nullable(),
+  assigneeUserId: z.string().trim().min(1).optional().nullable(),
+}).superRefine((value, ctx) => {
+  const hasAgentField = Object.prototype.hasOwnProperty.call(value, "assigneeAgentId");
+  const hasUserField = Object.prototype.hasOwnProperty.call(value, "assigneeUserId");
+  if (!hasAgentField && !hasUserField) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "assigneeAgentId or assigneeUserId is required",
+      path: ["assigneeAgentId"],
+    });
+  }
+  if (value.assigneeAgentId && value.assigneeUserId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Issue can only have one assignee",
+      path: ["assigneeAgentId"],
+    });
+  }
+});
 
 const promoteLowTrustOutputSchema = z.object({
   sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
@@ -5850,6 +5871,75 @@ export function issueRoutes(
         prevExecutionRunId: result.previous.executionRunId,
         clearAssignee,
       },
+    });
+
+    res.json(result);
+  });
+
+  router.post("/issues/:id/admin/repair-assignee", validate(adminRepairIssueAssigneeSchema), async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await assertCanAssignTasks(req, existing.companyId, {
+      issueId: existing.id,
+      projectId: existing.projectId ?? null,
+      parentIssueId: existing.parentId ?? null,
+      assigneeAgentId: req.body.assigneeAgentId ?? null,
+      assigneeUserId: req.body.assigneeUserId ?? null,
+    });
+
+    const result = await svc.adminRepairAssignee(id, {
+      assigneeAgentId: req.body.assigneeAgentId,
+      assigneeUserId: req.body.assigneeUserId,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_repair_assignee",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        issueId: result.issue.id,
+        actorUserId: req.actor.userId,
+        previousAssigneeAgentId: result.previous.assigneeAgentId,
+        previousAssigneeUserId: result.previous.assigneeUserId,
+        previousAssigneeAgentCompanyId: result.previous.assigneeAgentCompanyId,
+        nextAssigneeAgentId: result.issue.assigneeAgentId,
+        nextAssigneeUserId: result.issue.assigneeUserId,
+        prevCheckoutRunId: result.previous.checkoutRunId,
+        prevExecutionRunId: result.previous.executionRunId,
+      },
+    });
+
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: result.issue,
+      reason: "issue_assigned",
+      mutation: "update",
+      contextSource: "issue.admin_repair_assignee",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
     });
 
     res.json(result);

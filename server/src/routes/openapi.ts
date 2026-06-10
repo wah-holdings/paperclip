@@ -2965,6 +2965,23 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/admin/repair-assignee",
+  tags: ["issues"],
+  summary: "Repair a missing or cross-company issue assignee (admin)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        assigneeAgentId: z.string().uuid().optional().nullable(),
+        assigneeUserId: z.string().trim().min(1).optional().nullable(),
+      }),
+    ),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/tree-control/state",
   tags: ["issues"],
