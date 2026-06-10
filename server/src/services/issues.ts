@@ -340,6 +340,22 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function isIssueIdentifierUniqueViolation(error: unknown): boolean {
+  const candidates = [
+    error,
+    (error as { cause?: unknown } | null | undefined)?.cause,
+  ];
+  return candidates.some((candidate) => {
+    const maybe = candidate as { code?: string; constraint?: string; constraint_name?: string; message?: string };
+    return maybe.code === "23505" &&
+    (
+      maybe.constraint === "issues_identifier_idx" ||
+      maybe.constraint_name === "issues_identifier_idx" ||
+      typeof maybe.message === "string" && maybe.message.includes("issues_identifier_idx")
+    );
+  });
+}
+
 export function clampIssueListLimit(limit: number): number {
   return Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
 }
@@ -4214,10 +4230,32 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
+        const [allocationCompany] = await tx
+          .select({ issuePrefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, companyId));
+        if (!allocationCompany) throw notFound("Company not found");
+
+        const identifierSuffix = sql<string>`split_part(${issues.identifier}, '-', 2)`;
+
+        // Self-correcting counter: allocate above both normalized issue_number
+        // values and imported/manual identifiers whose issue_number is null.
         const [maxRow] = await tx
-          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+          .select({
+            maxNum: sql<number>`
+              greatest(
+                coalesce(max(${issues.issueNumber}), 0),
+                coalesce(max(
+                  CASE
+                    WHEN split_part(${issues.identifier}, '-', 1) = ${allocationCompany.issuePrefix}
+                      AND ${identifierSuffix} ~ '^[0-9]+$'
+                    THEN ${identifierSuffix}::int
+                    ELSE NULL
+                  END
+                ), 0)
+              )
+            `,
+          })
           .from(issues)
           .where(eq(issues.companyId, companyId));
         const currentMax = maxRow?.maxNum ?? 0;
@@ -4270,7 +4308,16 @@ export function issueService(db: Db) {
           }),
         );
 
-        const [issue] = await tx.insert(issues).values(values).returning();
+        let issue: typeof issues.$inferSelect;
+        try {
+          [issue] = await tx.insert(issues).values(values).returning();
+        } catch (error) {
+          if (!isIssueIdentifierUniqueViolation(error)) throw error;
+          throw conflict("Issue identifier allocation collision; repair the company issue counter and retry", {
+            identifier,
+            issueNumber,
+          });
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
