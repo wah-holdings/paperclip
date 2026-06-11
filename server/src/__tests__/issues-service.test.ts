@@ -1867,6 +1867,90 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
+  it("allocates above imported identifiers whose issue_number is null", async () => {
+    const companyId = randomUUID();
+    const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: prefix,
+      issueCounter: 3449,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: `${prefix}-3450`,
+      issueNumber: null,
+      title: "Imported issue with null issue number",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Next issue after import",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(created.identifier).toBe(`${prefix}-3451`);
+    expect(created.issueNumber).toBe(3451);
+
+    const [company] = await db
+      .select({ issueCounter: companies.issueCounter })
+      .from(companies)
+      .where(eq(companies.id, companyId));
+    expect(company.issueCounter).toBe(3451);
+  });
+
+  it("returns a repairable conflict when identifier allocation still collides", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: prefix,
+        issueCounter: 0,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Paperclip",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        issueCounter: 0,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: otherCompanyId,
+      identifier: `${prefix}-1`,
+      issueNumber: null,
+      title: "Legacy global identifier collision",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Colliding issue",
+        status: "todo",
+        priority: "medium",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Issue identifier allocation collision; repair the company issue counter and retry",
+      details: {
+        identifier: `${prefix}-1`,
+        issueNumber: 1,
+      },
+    });
+  });
+
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
