@@ -36,12 +36,22 @@ jobs:
 
       - name: Generate commitperclip token
         id: token
+        # Fork-local fallback: wah-holdings fork has no COMMITPERCLIP_KEY secret
+        # (vendor app private key stays with upstream). Fall back to the
+        # workflow's GITHUB_TOKEN, which carries the permissions block above
+        # (pull-requests/checks write) — enough for the gate scripts.
         run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          if [ -n "$COMMITPERCLIP_KEY" ]; then
+            TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          else
+            echo "COMMITPERCLIP_KEY not set; falling back to GITHUB_TOKEN (fork mode)."
+            TOKEN="$FALLBACK_TOKEN"
+          fi
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          FALLBACK_TOKEN: ${{ github.token }}
 
       - name: Run quality gates
         id: quality
