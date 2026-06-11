@@ -3366,8 +3366,8 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
-    const membership = await db
+  async function assertAssignableUser(companyId: string, userId: string, dbOrTx: DbReader = db) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -5674,6 +5674,95 @@ export function issueService(db: Db) {
         return {
           issue: enriched,
           previous: {
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          },
+        };
+      }),
+
+    adminRepairAssignee: async (
+      id: string,
+      input: { assigneeAgentId?: string | null; assigneeUserId?: string | null } = {},
+    ) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        if (!existing.assigneeAgentId) {
+          throw conflict("Issue does not have a broken agent assignee to repair");
+        }
+
+        const currentAssignee = await tx
+          .select({ id: agents.id, companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, existing.assigneeAgentId))
+          .then((rows) => rows[0] ?? null);
+        const repairable =
+          !currentAssignee ||
+          currentAssignee.companyId !== existing.companyId;
+        if (!repairable) {
+          throw conflict("Issue assignee is already in the issue company; use the normal update path");
+        }
+
+        const nextAssigneeAgentId =
+          input.assigneeAgentId === undefined ? null : input.assigneeAgentId;
+        const nextAssigneeUserId =
+          input.assigneeUserId === undefined ? null : input.assigneeUserId;
+
+        if (nextAssigneeAgentId && nextAssigneeUserId) {
+          throw unprocessable("Issue can only have one assignee");
+        }
+        if (nextAssigneeAgentId) {
+          await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "work" });
+        }
+        if (nextAssigneeUserId) {
+          await assertAssignableUser(existing.companyId, nextAssigneeUserId, tx);
+        }
+
+        const patch: Partial<typeof issues.$inferInsert> = {
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        };
+        if (existing.status === "in_progress") {
+          patch.status = "todo";
+          patch.startedAt = null;
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set(patch)
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return {
+          issue: enriched,
+          previous: {
+            assigneeAgentId: existing.assigneeAgentId,
+            assigneeUserId: existing.assigneeUserId,
+            assigneeAgentCompanyId: currentAssignee?.companyId ?? null,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
           },
