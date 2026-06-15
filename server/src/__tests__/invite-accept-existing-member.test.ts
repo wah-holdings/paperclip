@@ -297,6 +297,84 @@ function createAcceptedHumanInviteReplayDbStub() {
   return { db, updateValues };
 }
 
+function createAcceptedHumanInviteReplayStaleUserDbStub() {
+  const updateValues: unknown[] = [];
+  const invite = {
+    id: "invite-1",
+    companyId: "company-1",
+    inviteType: "company_join",
+    allowedJoinTypes: "human",
+    tokenHash: "hash",
+    defaultsPayload: { human: { role: "owner" } },
+    expiresAt: new Date("2027-03-10T00:00:00.000Z"),
+    invitedByUserId: "inviter-user",
+    revokedAt: null,
+    acceptedAt: new Date("2026-03-07T00:05:00.000Z"),
+    createdAt: new Date("2026-03-07T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-07T00:05:00.000Z"),
+  };
+  const staleJoinRequest = {
+    id: "join-1",
+    inviteId: "invite-1",
+    companyId: "company-1",
+    requestType: "human",
+    status: "pending_approval",
+    requestIp: "::ffff:127.0.0.1",
+    requestingUserId: "checkout-created-user",
+    requestEmailSnapshot: "owner@example.com",
+    agentName: null,
+    adapterType: null,
+    capabilities: null,
+    agentDefaultsPayload: null,
+    claimSecretHash: null,
+    claimSecretExpiresAt: null,
+    claimSecretConsumedAt: null,
+    createdAgentId: null,
+    approvedByUserId: null,
+    approvedAt: null,
+    rejectedByUserId: null,
+    rejectedAt: null,
+    createdAt: new Date("2026-03-07T00:01:00.000Z"),
+    updatedAt: new Date("2026-03-07T00:01:00.000Z"),
+  };
+  const claimedJoinRequest = {
+    ...staleJoinRequest,
+    requestingUserId: "better-auth-user",
+    requestEmailSnapshot: "owner@example.com",
+    updatedAt: new Date("2026-03-07T00:06:00.000Z"),
+  };
+  const approvedJoinRequest = {
+    ...claimedJoinRequest,
+    status: "approved",
+    approvedByUserId: "inviter-user",
+    approvedAt: new Date("2026-03-07T00:07:00.000Z"),
+    updatedAt: new Date("2026-03-07T00:07:00.000Z"),
+  };
+  const selectResponses = [
+    [invite],
+    [staleJoinRequest],
+    [{ email: "owner@example.com" }],
+  ];
+  const updateResponses = [[claimedJoinRequest], [approvedJoinRequest]];
+
+  const db = {
+    select() {
+      return createQuery(selectResponses.shift() ?? []);
+    },
+    update() {
+      return createQuery(updateResponses.shift() ?? [], {
+        onSet: (value) => updateValues.push(value),
+      });
+    },
+    insert: vi.fn(),
+    transaction(callback: (tx: unknown) => unknown) {
+      return callback(db);
+    },
+  };
+
+  return { db, updateValues };
+}
+
 describe("POST /invites/:token/accept", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -434,6 +512,40 @@ describe("POST /invites/:token/accept", () => {
         entityId: "join-1",
         details: expect.objectContaining({ source: "human_invite_accept" }),
       }),
+    );
+  });
+
+  it("replays a consumed human invite by email and grants access to the current signed-in user", async () => {
+    const { db, updateValues } = createAcceptedHumanInviteReplayStaleUserDbStub();
+    const app = createAppWithActor(db, {
+      type: "board",
+      source: "session",
+      userId: "better-auth-user",
+      companyIds: [],
+      memberships: [],
+    });
+
+    const res = await request(app)
+      .post("/api/invites/pcp_invite_test/accept")
+      .send({ requestType: "human" });
+
+    expect(res.status).toBe(202);
+    expect(res.body.status).toBe("approved");
+    expect(updateValues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          requestingUserId: "better-auth-user",
+          requestEmailSnapshot: "owner@example.com",
+          updatedAt: expect.any(Date),
+        }),
+      ]),
+    );
+    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith(
+      "company-1",
+      "user",
+      "better-auth-user",
+      "owner",
+      "active",
     );
   });
 });

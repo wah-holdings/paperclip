@@ -3622,7 +3622,18 @@ export function accessRoutes(
                     isNull(invites.revokedAt)
                   )
                 );
-              return existingHumanJoinRequest;
+              const updatedJoinRequest = await tx
+                .update(joinRequests)
+                .set({
+                  requestIp: requestIp(req),
+                  requestingUserId: actorRequestingUserId,
+                  requestEmailSnapshot: actorEmail,
+                  updatedAt: new Date()
+                })
+                .where(eq(joinRequests.id, existingHumanJoinRequest.id))
+                .returning()
+                .then((rows) => rows[0] ?? null);
+              return updatedJoinRequest ?? existingHumanJoinRequest;
             })
           : await db.transaction(async (tx) => {
               await tx
@@ -3685,6 +3696,10 @@ export function accessRoutes(
               adapterType: requestType === "agent" ? adapterType : null,
               agentDefaultsPayload:
                 requestType === "agent" ? joinDefaults.normalized : null,
+              requestingUserId:
+                requestType === "human" ? actorRequestingUserId : undefined,
+              requestEmailSnapshot:
+                requestType === "human" ? actorEmail : undefined,
               updatedAt: new Date()
             })
             .where(eq(joinRequests.id, replayJoinRequestId as string))
