@@ -3660,14 +3660,62 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
-  async function adoptStaleCheckoutRun(input: {
+  function heartbeatRunContextIssueId(contextSnapshot: unknown) {
+    return readStringFromRecord(contextSnapshot, "issueId") ?? readStringFromRecord(contextSnapshot, "taskId");
+  }
+
+  async function isSupersededSameIssueCheckoutRun(input: {
     issueId: string;
+    companyId: string;
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    dbOrTx?: DbReader;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
-    if (!stale) return null;
+    const dbReader = input.dbOrTx ?? db;
+    const runRows = await dbReader
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        companyId: heartbeatRuns.companyId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, [input.expectedCheckoutRunId, input.actorRunId]));
+
+    const lockedRun = runRows.find((row) => row.id === input.expectedCheckoutRunId);
+    const actorRun = runRows.find((row) => row.id === input.actorRunId);
+    if (!lockedRun || !actorRun) return false;
+    if (lockedRun.companyId !== input.companyId || actorRun.companyId !== input.companyId) return false;
+    if (lockedRun.agentId !== input.actorAgentId || actorRun.agentId !== input.actorAgentId) return false;
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return false;
+
+    const lockedIssueId = heartbeatRunContextIssueId(lockedRun.contextSnapshot);
+    const actorIssueId = heartbeatRunContextIssueId(actorRun.contextSnapshot);
+    if (lockedIssueId !== input.issueId || actorIssueId !== input.issueId) return false;
+
+    const lockedStartedAt = toTimestampMs(lockedRun.startedAt) ?? toTimestampMs(lockedRun.createdAt);
+    const actorStartedAt = toTimestampMs(actorRun.startedAt) ?? toTimestampMs(actorRun.createdAt);
+    if (lockedStartedAt === null || actorStartedAt === null) return false;
+    return actorStartedAt >= lockedStartedAt;
+  }
+
+  async function adoptStaleCheckoutRun(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedCheckoutRunId: string;
+    dbOrTx?: DbReader;
+  }) {
+    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId, input.dbOrTx);
+    const superseded = stale
+      ? false
+      : await isSupersededSameIssueCheckoutRun(input);
+    if (!stale && !superseded) return null;
 
     const now = new Date();
     const adopted = await db
@@ -5470,6 +5518,7 @@ export function issueService(db: Db) {
       const current = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
@@ -5518,6 +5567,7 @@ export function issueService(db: Db) {
       ) {
         const adopted = await adoptStaleCheckoutRun({
           issueId: id,
+          companyId: issueCompany.companyId,
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
@@ -5557,6 +5607,7 @@ export function issueService(db: Db) {
       const current = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
@@ -5606,6 +5657,7 @@ export function issueService(db: Db) {
       ) {
         const adopted = await adoptStaleCheckoutRun({
           issueId: id,
+          companyId: current.companyId,
           actorAgentId,
           actorRunId,
           expectedCheckoutRunId: current.checkoutRunId,
