@@ -16,6 +16,8 @@ export interface IssueLivenessIssueInput {
   companyId: string;
   identifier: string | null;
   title: string;
+  description?: string | null;
+  planText?: string | null;
   status: string;
   projectId?: string | null;
   goalId?: string | null;
@@ -163,6 +165,10 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 function monitorFromIssue(issue: IssueLivenessIssueInput) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
@@ -170,10 +176,14 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
 }
 
 function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
-  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  const nextCheckAtMs = readDateMs(
+    issue.monitorNextCheckAt ??
+      policyMonitor?.nextCheckAt ??
+      stateMonitor?.nextCheckAt,
+  );
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
-  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
   const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
   if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
 
@@ -183,6 +193,52 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;
+}
+
+const MONTH_INDEX_BY_NAME = new Map([
+  ["jan", 0], ["january", 0],
+  ["feb", 1], ["february", 1],
+  ["mar", 2], ["march", 2],
+  ["apr", 3], ["april", 3],
+  ["may", 4],
+  ["jun", 5], ["june", 5],
+  ["jul", 6], ["july", 6],
+  ["aug", 7], ["august", 7],
+  ["sep", 8], ["sept", 8], ["september", 8],
+  ["oct", 9], ["october", 9],
+  ["nov", 10], ["november", 10],
+  ["dec", 11], ["december", 11],
+]);
+
+function explicitFutureDateInText(text: string, now: Date): boolean {
+  const year = now.getUTCFullYear();
+  const candidates: Date[] = [];
+
+  for (const match of text.matchAll(/\b(20\d{2})-(0[1-9]|1[0-2])-([0-2]\d|3[01])\b/g)) {
+    const candidate = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59, 999));
+    if (!Number.isNaN(candidate.getTime())) candidates.push(candidate);
+  }
+
+  for (const match of text.matchAll(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+([1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:,\s*(20\d{2}))?\b/gi)) {
+    const monthIndex = MONTH_INDEX_BY_NAME.get(match[1]!.toLowerCase());
+    if (monthIndex === undefined) continue;
+    const candidateYear = match[3] ? Number(match[3]) : year;
+    const candidate = new Date(Date.UTC(candidateYear, monthIndex, Number(match[2]), 23, 59, 59, 999));
+    if (!Number.isNaN(candidate.getTime())) candidates.push(candidate);
+  }
+
+  const nowMs = now.getTime();
+  return candidates.some((candidate) => candidate.getTime() > nowMs);
+}
+
+function hasExplicitFutureTargetDate(issue: IssueLivenessIssueInput, nowMs: number) {
+  const text = [
+    readString(issue.title),
+    readString(issue.description),
+    readString(issue.planText),
+  ].filter(Boolean).join("\n");
+  if (!text) return false;
+  return explicitFutureDateInText(text, new Date(nowMs));
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -402,6 +458,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
+      hasExplicitFutureTargetDate(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||

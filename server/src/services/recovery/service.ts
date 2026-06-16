@@ -16,8 +16,10 @@ import {
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  documentRevisions,
   issueComments,
   issueApprovals,
+  issueDocuments,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -2762,6 +2764,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         projectId: issues.projectId,
         goalId: issues.goalId,
@@ -2794,6 +2797,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       approvalRows,
       recoveryIssueRows,
       recoveryActionRows,
+      planRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -2903,7 +2907,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
+      issueRowsPromise.then((rows) => {
+        const issueIdsUnderAnalysis = rows.map((row) => row.id);
+        return issueIdsUnderAnalysis.length === 0
+          ? []
+          : db
+            .select({
+              issueId: issueDocuments.issueId,
+              revisionNumber: documentRevisions.revisionNumber,
+              body: documentRevisions.body,
+            })
+            .from(issueDocuments)
+            .innerJoin(documentRevisions, eq(issueDocuments.documentId, documentRevisions.documentId))
+            .where(
+              and(
+                eq(issueDocuments.key, "plan"),
+                inArray(issueDocuments.issueId, issueIdsUnderAnalysis),
+              ),
+            )
+            .orderBy(desc(documentRevisions.revisionNumber));
+      }),
     ]);
+
+    const planTextByIssueId = new Map<string, string>();
+    for (const row of planRows as Array<{ issueId: string; revisionNumber: number; body: string }>) {
+      if (!planTextByIssueId.has(row.issueId)) planTextByIssueId.set(row.issueId, row.body);
+    }
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
@@ -2933,7 +2962,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return classifyIssueGraphLiveness({
-      issues: issueRows,
+      issues: issueRows.map((row) => ({
+        ...row,
+        planText: planTextByIssueId.get(row.id) ?? null,
+      })),
       relations: relationRows,
       agents: agentRows,
       activeRuns: activeRunRows.map((row) => ({
