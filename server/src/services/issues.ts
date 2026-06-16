@@ -2509,7 +2509,7 @@ async function listIssueBlockedInboxAttentionMap(
   const graphIssueIds = graphIssues.map((issue) => issue.id);
   const issuesById = new Map<string, IssueRow>(graphIssues.map((issue) => [issue.id, issue]));
 
-  const [activeRunRows, wakeRows, scheduledRetryRows, interactionRows, approvalRows, handoffMap] = await Promise.all([
+  const [activeRunRows, wakeRows, scheduledRetryRows, interactionRows, approvalRows, planRows, handoffMap] = await Promise.all([
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
@@ -2587,8 +2587,29 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(approvals.status, [...BLOCKED_INBOX_PENDING_APPROVAL_STATUSES]),
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
+    graphIssueIds.length === 0
+      ? Promise.resolve([])
+      : dbOrTx
+          .select({
+            issueId: issueDocuments.issueId,
+            revisionNumber: documentRevisions.revisionNumber,
+            body: documentRevisions.body,
+          })
+          .from(issueDocuments)
+          .innerJoin(documentRevisions, eq(issueDocuments.documentId, documentRevisions.documentId))
+          .where(and(
+            eq(issueDocuments.companyId, companyId),
+            eq(issueDocuments.key, "plan"),
+            inArray(issueDocuments.issueId, graphIssueIds),
+          ))
+          .orderBy(desc(documentRevisions.revisionNumber)),
     listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds),
   ]);
+
+  const planTextByIssueId = new Map<string, string>();
+  for (const row of planRows as Array<{ issueId: string; revisionNumber: number; body: string }>) {
+    if (!planTextByIssueId.has(row.issueId)) planTextByIssueId.set(row.issueId, row.body);
+  }
 
   const pendingInteractions = (interactionRows as BlockedInboxInteractionRow[]).map((row) => ({
     companyId,
@@ -2623,6 +2644,8 @@ async function listIssueBlockedInboxAttentionMap(
       companyId: issue.companyId,
       identifier: issue.identifier,
       title: issue.title,
+      description: issue.description,
+      planText: planTextByIssueId.get(issue.id) ?? null,
       status: issue.status,
       projectId: issue.projectId,
       goalId: issue.goalId,
