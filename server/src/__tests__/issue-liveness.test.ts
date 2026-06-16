@@ -474,10 +474,21 @@ describe("issue graph liveness classifier", () => {
         issue: baseReviewIssue,
         openRecoveryIssues: [{ companyId, issueId: reviewIssueId, status: "todo" }],
       },
+      {
+        name: "execution state monitor",
+        issue: {
+          ...baseReviewIssue,
+          executionState: {
+            monitor: { nextCheckAt: "2026-07-30T13:00:00.000Z" },
+          },
+        },
+        now: "2026-06-16T18:00:00.000Z",
+      },
     ];
 
     for (const testCase of cases) {
       const findings = classifyIssueGraphLiveness({
+        now: testCase.now,
         issues: [testCase.issue],
         relations: [],
         agents: [agent(), manager],
@@ -490,6 +501,54 @@ describe("issue graph liveness classifier", () => {
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("does not flag future-dated in_review issues that are intentionally parked", () => {
+    const reviewIssueId = "review-1";
+    const baseReviewIssue = issue({
+      id: reviewIssueId,
+      identifier: "PAP-2279",
+      title: "Screenshot acceptance review",
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionState: null,
+    });
+
+    const futureDated = [
+      {
+        name: "title month-day target",
+        issue: { ...baseReviewIssue, title: "Jul 30 Personality Sandbox readiness checklist" },
+      },
+      {
+        name: "description month-day target",
+        issue: { ...baseReviewIssue, description: "Holding until Jul 30 for the readiness window." },
+      },
+      {
+        name: "plan month-day target",
+        issue: { ...baseReviewIssue, planText: "Correctly waiting for June 29 AM retro-deck snapshot." },
+      },
+      {
+        name: "iso target",
+        issue: { ...baseReviewIssue, description: "Park this until 2026-07-30." },
+      },
+    ];
+
+    for (const testCase of futureDated) {
+      expect(classifyIssueGraphLiveness({
+        now: "2026-06-16T18:00:00.000Z",
+        issues: [testCase.issue],
+        relations: [],
+        agents: [agent(), manager],
+      }), testCase.name).toEqual([]);
+    }
+
+    const pastDated = classifyIssueGraphLiveness({
+      now: "2026-06-16T18:00:00.000Z",
+      issues: [{ ...baseReviewIssue, description: "This was parked until June 1." }],
+      relations: [],
+      agents: [agent(), manager],
+    });
+    expect(pastDated[0]?.state).toBe("in_review_without_action_path");
   });
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {
