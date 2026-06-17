@@ -364,7 +364,7 @@ describe("issue graph liveness classifier", () => {
         { companyId, blockerIssueId: phaseIssueId, blockedIssueId: "pap-2239" },
         { companyId, blockerIssueId: reviewLeafId, blockedIssueId: phaseIssueId },
       ],
-      agents: [agent(), manager],
+      agents: [agent({ status: "paused" }), manager],
     });
 
     expect(findings).toHaveLength(1);
@@ -373,7 +373,7 @@ describe("issue graph liveness classifier", () => {
       identifier: "PAP-2239",
       state: "in_review_without_action_path",
       recoveryIssueId: reviewLeafId,
-      recommendedOwnerAgentId: coderId,
+      recommendedOwnerAgentId: managerId,
       dependencyPath: [
         expect.objectContaining({ issueId: "pap-2239" }),
         expect.objectContaining({ issueId: phaseIssueId }),
@@ -446,6 +446,10 @@ describe("issue graph liveness classifier", () => {
         },
       },
       {
+        name: "live agent assignee",
+        issue: baseReviewIssue,
+      },
+      {
         name: "user owner",
         issue: { ...baseReviewIssue, assigneeAgentId: null, assigneeUserId: "board-user-1" },
       },
@@ -503,6 +507,34 @@ describe("issue graph liveness classifier", () => {
     }
   });
 
+  it("does not flag a blocked chain whose in_review root has a live assignee and pending wake interaction", () => {
+    const rootIssueId = "review-root-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: blockedId,
+          identifier: "CAD-3254",
+          title: "Dependent waiting on root decision",
+          status: "blocked",
+        }),
+        issue({
+          id: rootIssueId,
+          identifier: "CAD-3128",
+          title: "ADP procurement decision",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: rootIssueId, blockedIssueId: blockedId }],
+      agents: [agent(), manager],
+      pendingInteractions: [{ companyId, issueId: rootIssueId, status: "pending" }],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not flag future-dated in_review issues that are intentionally parked", () => {
     const reviewIssueId = "review-1";
     const baseReviewIssue = issue({
@@ -546,7 +578,7 @@ describe("issue graph liveness classifier", () => {
       now: "2026-06-16T18:00:00.000Z",
       issues: [{ ...baseReviewIssue, description: "This was parked until June 1." }],
       relations: [],
-      agents: [agent(), manager],
+      agents: [agent({ status: "paused" }), manager],
     });
     expect(pastDated[0]?.state).toBe("in_review_without_action_path");
   });
@@ -566,7 +598,7 @@ describe("issue graph liveness classifier", () => {
         }),
       ],
       relations: [],
-      agents: [agent(), manager],
+      agents: [agent({ status: "paused" }), manager],
       pendingInteractions: [{ companyId: "other-company", issueId: reviewIssueId, status: "pending" }],
       openRecoveryIssues: [{ companyId: "other-company", issueId: reviewIssueId, status: "todo" }],
     });

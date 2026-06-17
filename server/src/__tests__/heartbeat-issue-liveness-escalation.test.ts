@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   projects,
@@ -368,6 +369,29 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(1);
+  });
+
+  it("treats pending wake-assignee interactions on an in_review blocker as an active waiting path", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "in_review",
+      blockerAssigneeAgentId: "coder",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: blockerIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: coderId,
+      payload: { version: 1, questions: [{ id: "decision", prompt: "Choose path" }] },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
   });
 
   it("keeps active invalid_review_participant recoveries from being retired", async () => {

@@ -3068,7 +3068,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: issueThreadInteractions.status,
         })
         .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.status, "pending")),
+        .where(
+          and(
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+          ),
+        ),
       db
         .select({
           companyId: issueApprovals.companyId,
@@ -3142,6 +3147,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!planTextByIssueId.has(row.issueId)) planTextByIssueId.set(row.issueId, row.body);
     }
 
+    const budgetBlockedAgentIds = new Set<string>();
+    await Promise.all(issueRows.map(async (row) => {
+      if (row.status !== "in_review" || !row.assigneeAgentId) return;
+      const budgetBlock = await budgets.getInvocationBlock(row.companyId, row.assigneeAgentId, {
+        issueId: row.id,
+        projectId: row.projectId,
+      });
+      if (budgetBlock) budgetBlockedAgentIds.add(row.assigneeAgentId);
+    }));
+
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
         const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
@@ -3196,6 +3211,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      budgetBlockedAgentIds: [...budgetBlockedAgentIds],
       now: new Date(),
     });
   }

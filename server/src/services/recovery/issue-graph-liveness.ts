@@ -106,6 +106,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  budgetBlockedAgentIds?: string[];
   now?: Date | string;
 }
 
@@ -424,6 +425,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const budgetBlockedAgentIds = new Set(input.budgetBlockedAgentIds ?? []);
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -513,6 +515,17 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         recommendedAction:
           `Repair ${issueLabel(reviewIssue)}'s review participant or return the issue to an active assignee with a clear change request.`,
       });
+    }
+
+    const assigneeAgent = reviewIssue.assigneeAgentId
+      ? agentsById.get(reviewIssue.assigneeAgentId)
+      : null;
+    if (
+      isInvokableAgent(assigneeAgent, agentsById) &&
+      assigneeAgent?.companyId === reviewIssue.companyId &&
+      !budgetBlockedAgentIds.has(assigneeAgent.id)
+    ) {
+      return null;
     }
 
     if (!reviewIssue.assigneeAgentId || reviewIssue.assigneeUserId) return null;
