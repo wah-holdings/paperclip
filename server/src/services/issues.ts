@@ -1160,6 +1160,7 @@ const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execut
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
+const BLOCKER_ATTENTION_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
@@ -1684,7 +1685,7 @@ async function listIssueBlockerAttentionMap(
   }
 
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => !BLOCKER_ATTENTION_TERMINAL_STATUSES.includes(node.status))
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
@@ -1781,7 +1782,7 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
     }
     const nodeSample = blockerSampleIdentifier(node);
-    if (node.status === "done") {
+    if (BLOCKER_ATTENTION_TERMINAL_STATUSES.includes(node.status)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (explicitWaitingIssueIds.has(node.id)) {
@@ -1800,14 +1801,11 @@ async function listIssueBlockerAttentionMap(
     if (activeIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
-    if (node.status === "cancelled") {
-      return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
-    }
     if (node.status === "backlog" && node.assigneeAgentId) {
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = edgesByIssueId.get(node.id) ?? [];
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -1851,7 +1849,7 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = edgesByIssueId.get(root.id) ?? [];
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",

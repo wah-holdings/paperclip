@@ -239,7 +239,7 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
-  it("detects cancelled blockers and uninvokable blocker assignees deterministically", () => {
+  it("treats cancelled blockers as terminal for liveness escalation", () => {
     const cancelled = classifyIssueGraphLiveness({
       issues: [
         issue(),
@@ -254,8 +254,10 @@ describe("issue graph liveness classifier", () => {
       relations: blocks,
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Paused", status: "paused" })],
     });
-    expect(cancelled[0]?.state).toBe("blocked_by_cancelled_issue");
+    expect(cancelled).toEqual([]);
+  });
 
+  it("detects uninvokable blocker assignees deterministically", () => {
     const paused = classifyIssueGraphLiveness({
       issues: [
         issue(),

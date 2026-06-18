@@ -427,11 +427,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
-      state: "needs_attention",
-      reason: "attention_required",
-      coveredBlockerCount: 0,
+      state: "stalled",
+      reason: "stalled_review",
+      coveredBlockerCount: 1,
       stalledBlockerCount: 1,
-      attentionBlockerCount: 1,
+      attentionBlockerCount: 0,
       sampleStalledBlockerIdentifier: "PBQ-2",
     });
   });
