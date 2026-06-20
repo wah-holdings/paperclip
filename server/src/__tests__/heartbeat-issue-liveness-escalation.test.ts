@@ -17,6 +17,8 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -331,6 +333,81 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         blockerIssueId,
       ].join(":"),
     });
+  });
+
+  it("treats an active future routine trigger parented to an assigned backlog blocker as coverage", async () => {
+    await enableAutoRecovery();
+    const { blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const [blocker] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId));
+    const routineId = randomUUID();
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId: blocker!.companyId,
+      parentIssueId: blockerIssueId,
+      title: "Calendar gate wake",
+      status: "active",
+      priority: "medium",
+      assigneeAgentId: blocker!.assigneeAgentId,
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId: blocker!.companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+  });
+
+  it("treats a latest comment naming an active future routine trigger as assigned backlog blocker coverage", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Mentioned calendar gate",
+      status: "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: triggerId,
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      nextRunAt: new Date(Date.now() + 60 * 60 * 1000),
+      publicId: "routine-trigger-public",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId: blockerIssueId,
+      authorType: "agent",
+      body: `Calendar gate is covered by active routine ${routineId} and trigger ${triggerId}.`,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
   });
 
   it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {

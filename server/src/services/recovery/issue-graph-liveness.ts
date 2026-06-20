@@ -18,6 +18,7 @@ export interface IssueLivenessIssueInput {
   title: string;
   description?: string | null;
   planText?: string | null;
+  commentText?: string | null;
   status: string;
   projectId?: string | null;
   goalId?: string | null;
@@ -59,6 +60,15 @@ export interface IssueLivenessWaitingPathInput {
   companyId: string;
   issueId: string;
   status: string;
+}
+
+export interface IssueLivenessRoutineCoverageInput {
+  companyId: string;
+  routineId: string;
+  triggerId: string;
+  triggerPublicId?: string | null;
+  parentIssueId?: string | null;
+  nextRunAt: Date | string;
 }
 
 export interface IssueLivenessDependencyPathEntry {
@@ -106,6 +116,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  routineCoverages?: IssueLivenessRoutineCoverageInput[];
   budgetBlockedAgentIds?: string[];
   now?: Date | string;
 }
@@ -241,9 +252,34 @@ function hasExplicitFutureTargetDate(issue: IssueLivenessIssueInput, nowMs: numb
     readString(issue.title),
     readString(issue.description),
     readString(issue.planText),
+    readString(issue.commentText),
   ].filter(Boolean).join("\n");
   if (!text) return false;
   return explicitFutureDateInText(text, new Date(nowMs));
+}
+
+function hasRoutineCoverage(
+  issue: IssueLivenessIssueInput,
+  routineCoverages: IssueLivenessRoutineCoverageInput[],
+  nowMs: number,
+) {
+  const issueText = [
+    readString(issue.title),
+    readString(issue.description),
+    readString(issue.planText),
+    readString(issue.commentText),
+  ].filter(Boolean).join("\n");
+
+  return routineCoverages.some((coverage) => {
+    if (coverage.companyId !== issue.companyId) return false;
+    const nextRunAtMs = readDateMs(coverage.nextRunAt);
+    if (nextRunAtMs === null || nextRunAtMs <= nowMs) return false;
+    if (coverage.parentIssueId === issue.id) return true;
+    if (!issueText) return false;
+    return issueText.includes(coverage.routineId) ||
+      issueText.includes(coverage.triggerId) ||
+      (coverage.triggerPublicId ? issueText.includes(coverage.triggerPublicId) : false);
+  });
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -429,6 +465,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const routineCoverages = input.routineCoverages ?? [];
   const budgetBlockedAgentIds = new Set(input.budgetBlockedAgentIds ?? []);
 
   for (const relation of input.relations) {
@@ -464,6 +501,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     return Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasExplicitFutureTargetDate(issue, nowMs) ||
+      hasRoutineCoverage(issue, routineCoverages, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||

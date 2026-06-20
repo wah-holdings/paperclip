@@ -25,6 +25,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -3006,6 +3008,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryIssueRows,
       recoveryActionRows,
       planRows,
+      commentRows,
+      routineCoverageRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -3140,11 +3144,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             )
             .orderBy(desc(documentRevisions.revisionNumber));
       }),
+      issueRowsPromise.then((rows) => {
+        const issueIdsUnderAnalysis = rows.map((row) => row.id);
+        return issueIdsUnderAnalysis.length === 0
+          ? []
+          : db
+            .select({
+              issueId: issueComments.issueId,
+              body: issueComments.body,
+              createdAt: issueComments.createdAt,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                isNull(issueComments.deletedAt),
+                inArray(issueComments.issueId, issueIdsUnderAnalysis),
+              ),
+            )
+            .orderBy(desc(issueComments.createdAt));
+      }),
+      db
+        .select({
+          companyId: routines.companyId,
+          routineId: routines.id,
+          triggerId: routineTriggers.id,
+          triggerPublicId: routineTriggers.publicId,
+          parentIssueId: routines.parentIssueId,
+          nextRunAt: routineTriggers.nextRunAt,
+        })
+        .from(routineTriggers)
+        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .where(
+          and(
+            eq(routines.status, "active"),
+            eq(routineTriggers.enabled, true),
+            gt(routineTriggers.nextRunAt, new Date()),
+          ),
+        ),
     ]);
 
     const planTextByIssueId = new Map<string, string>();
     for (const row of planRows as Array<{ issueId: string; revisionNumber: number; body: string }>) {
       if (!planTextByIssueId.has(row.issueId)) planTextByIssueId.set(row.issueId, row.body);
+    }
+
+    const commentTextByIssueId = new Map<string, string>();
+    const commentCountsByIssueId = new Map<string, number>();
+    for (const row of commentRows as Array<{ issueId: string; body: string; createdAt: Date }>) {
+      const count = commentCountsByIssueId.get(row.issueId) ?? 0;
+      if (count >= 5) continue;
+      commentCountsByIssueId.set(row.issueId, count + 1);
+      commentTextByIssueId.set(row.issueId, [
+        commentTextByIssueId.get(row.issueId),
+        row.body,
+      ].filter(Boolean).join("\n"));
     }
 
     const budgetBlockedAgentIds = new Set<string>();
@@ -3188,6 +3241,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issues: issueRows.map((row) => ({
         ...row,
         planText: planTextByIssueId.get(row.id) ?? null,
+        commentText: commentTextByIssueId.get(row.id) ?? null,
       })),
       relations: relationRows,
       agents: agentRows,
@@ -3211,6 +3265,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
       openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      routineCoverages: routineCoverageRows.filter((row) => row.nextRunAt !== null).map((row) => ({
+        companyId: row.companyId,
+        routineId: row.routineId,
+        triggerId: row.triggerId,
+        triggerPublicId: row.triggerPublicId,
+        parentIssueId: row.parentIssueId,
+        nextRunAt: row.nextRunAt!,
+      })),
       budgetBlockedAgentIds: [...budgetBlockedAgentIds],
       now: new Date(),
     });
