@@ -119,6 +119,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
   async function seedBlockedChain(opts: {
     outsideLookback?: boolean;
+    recentActivity?: boolean;
     blockerStatus?: string;
     blockerAssigneeAgentId?: "coder" | "manager" | null;
   } = {}) {
@@ -162,9 +163,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     ]);
 
-    const issueTimestamp = opts.outsideLookback === true
-      ? new Date(Date.now() - 25 * 60 * 60 * 1000)
-      : new Date(Date.now() - 60 * 60 * 1000);
+    const issueTimestamp = opts.recentActivity === true
+      ? new Date(Date.now() - 5 * 60 * 1000)
+      : opts.outsideLookback === true
+        ? new Date(Date.now() - 25 * 60 * 60 * 1000)
+        : new Date(Date.now() - 60 * 60 * 1000);
     await db.insert(issues).values([
       {
         id: blockedIssueId,
@@ -245,6 +248,23 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(0);
   });
 
+  it("does not escalate blocked chains with activity inside the 20 minute ladder window", async () => {
+    await enableAutoRecovery();
+    const { companyId } = await seedBlockedChain({ recentActivity: true });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.skippedTooRecent).toBe(1);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+  });
+
   it("suppresses liveness escalation when the source issue is under an active pause hold", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId } = await seedBlockedChain();
@@ -292,9 +312,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
-  it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {
+  it("suppresses auto-escalation for a backlog-terminating blocker chain", async () => {
     await enableAutoRecovery();
-    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+    const { companyId } = await seedBlockedChain({
       blockerStatus: "backlog",
       blockerAssigneeAgentId: "coder",
     });
@@ -303,8 +323,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const first = await heartbeat.reconcileIssueGraphLiveness();
     const second = await heartbeat.reconcileIssueGraphLiveness();
 
-    expect(first.findings).toBe(1);
-    expect(first.escalationsCreated).toBe(1);
+    expect(first.findings).toBe(0);
+    expect(first.escalationsCreated).toBe(0);
     expect(second.findings).toBe(0);
     expect(second.escalationsCreated).toBe(0);
 
@@ -312,24 +332,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: coderId,
-      originId: [
-        "harness_liveness",
-        companyId,
-        blockedIssueId,
-        "blocked_by_assigned_backlog_issue",
-        blockerIssueId,
-      ].join(":"),
-      originFingerprint: [
-        "harness_liveness_leaf",
-        companyId,
-        "blocked_by_assigned_backlog_issue",
-        blockerIssueId,
-      ].join(":"),
-    });
+    expect(escalations).toHaveLength(0);
   });
 
   it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {
@@ -485,6 +488,52 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+  });
+
+  it("routes unassigned blocker escalations to Cortana-as-operator when available", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const cortanaId = randomUUID();
+    await db.insert(agents).values({
+      id: cortanaId,
+      companyId,
+      name: "Cortana",
+      role: "operator",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: false } },
+      permissions: {},
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: cortanaId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
+    });
+
+    const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    const createdEvent = events.find((event) => event.action === "issue.harness_liveness_escalation_created");
+    expect(createdEvent?.details).toMatchObject({
+      ownerSelection: {
+        selectedAgentId: cortanaId,
+        selectedReason: "ordered_invokable_fallback",
+      },
+    });
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {

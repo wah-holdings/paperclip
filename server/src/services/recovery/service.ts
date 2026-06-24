@@ -69,6 +69,7 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const ISSUE_GRAPH_LIVENESS_ESCALATION_STALE_THRESHOLD_MS = 20 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -3492,13 +3493,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(latestUpdatedAt && latestUpdatedAt >= cutoff);
   }
 
+  function isLivenessFindingStaleEnoughForEscalation(
+    finding: IssueLivenessFinding,
+    staleCutoff: Date,
+    updatedAtByIssueKey: Map<string, Date>,
+  ) {
+    const latestUpdatedAt = latestDependencyUpdatedAtForLivenessFinding(finding, updatedAtByIssueKey);
+    return Boolean(latestUpdatedAt && latestUpdatedAt <= staleCutoff);
+  }
+
+  function isBacklogTerminatingLivenessFinding(finding: IssueLivenessFinding) {
+    const leaf = finding.dependencyPath[finding.dependencyPath.length - 1];
+    return leaf?.status === "backlog";
+  }
+
   async function buildIssueGraphLivenessAutoRecoveryPreview(
     opts?: { lookbackHours?: number; now?: Date },
   ): Promise<IssueGraphLivenessAutoRecoveryPreview> {
     const now = opts?.now ?? new Date();
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(opts?.lookbackHours);
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
-    const findings = await collectIssueGraphLivenessFindings();
+    const staleCutoff = new Date(now.getTime() - ISSUE_GRAPH_LIVENESS_ESCALATION_STALE_THRESHOLD_MS);
+    const findings = (await collectIssueGraphLivenessFindings())
+      .filter((finding) => !isBacklogTerminatingLivenessFinding(finding));
     const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
     const issueIds = [...new Set(findings.map((finding) => finding.recoveryIssueId))];
     const recoveryRows = issueIds.length > 0
@@ -3518,6 +3535,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
       if (!latestDependencyUpdatedAt || latestDependencyUpdatedAt < cutoff) {
         skippedOutsideLookback += 1;
+        continue;
+      }
+      if (latestDependencyUpdatedAt > staleCutoff) {
         continue;
       }
       const recoveryIssue = recoveryById.get(finding.recoveryIssueId);
@@ -3553,6 +3573,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     finding: IssueLivenessFinding,
     issue: typeof issues.$inferSelect,
   ) {
+    const operatorSelection = finding.state === "blocked_by_unassigned_issue"
+      ? await resolveOperatorEscalationOwner(finding, issue)
+      : null;
+    if (operatorSelection) return operatorSelection;
+
     const detailedCandidates = finding.recommendedOwnerCandidates.length > 0
       ? finding.recommendedOwnerCandidates
       : finding.recommendedOwnerCandidateAgentIds.map((agentId) => ({
@@ -3588,6 +3613,63 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         };
       }
       budgetBlockedCandidateAgentIds.push(candidate.agentId);
+    }
+
+    return null;
+  }
+
+  async function resolveOperatorEscalationOwner(
+    finding: IssueLivenessFinding,
+    issue: typeof issues.$inferSelect,
+  ) {
+    const companyAgents = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        role: agents.role,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, issue.companyId));
+    const operatorCandidates = companyAgents
+      .filter((agent) => {
+        const name = agent.name.trim().toLowerCase();
+        const role = agent.role.trim().toLowerCase();
+        return name === "cortana" || name.startsWith("cortana ") || role === "operator";
+      })
+      .sort((left, right) => {
+        const leftIsCortana = left.name.trim().toLowerCase().startsWith("cortana") ? 0 : 1;
+        const rightIsCortana = right.name.trim().toLowerCase().startsWith("cortana") ? 0 : 1;
+        if (leftIsCortana !== rightIsCortana) return leftIsCortana - rightIsCortana;
+        return left.id.localeCompare(right.id);
+      });
+    const budgetBlockedCandidateAgentIds: string[] = [];
+
+    for (const candidate of operatorCandidates) {
+      const invokability = await evaluateAgentInvokabilityFromDb(db, candidate);
+      if (!invokability.invokable) continue;
+      const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.id, {
+        issueId: issue.id,
+        projectId: issue.projectId,
+      });
+      if (budgetBlock) {
+        budgetBlockedCandidateAgentIds.push(candidate.id);
+        continue;
+      }
+      return {
+        agentId: candidate.id,
+        reason: "ordered_invokable_fallback" as const,
+        sourceIssueId: finding.recoveryIssueId,
+        candidateAgentIds: operatorCandidates.map((entry) => entry.id),
+        candidateReasons: operatorCandidates.map((entry) => ({
+          agentId: entry.id,
+          reason: "ordered_invokable_fallback" as const,
+          sourceIssueId: finding.recoveryIssueId,
+        })),
+        budgetBlockedCandidateAgentIds,
+      };
     }
 
     return null;
@@ -3821,7 +3903,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     force?: boolean;
     lookbackHours?: number;
   }) {
-    const findings = await collectIssueGraphLivenessFindings();
+    const findings = (await collectIssueGraphLivenessFindings())
+      .filter((finding) => !isBacklogTerminatingLivenessFinding(finding));
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
       experimentalSettings.enableIssueGraphLivenessAutoRecovery,
@@ -3832,6 +3915,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     );
     const now = new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
+    const staleCutoff = new Date(now.getTime() - ISSUE_GRAPH_LIVENESS_ESCALATION_STALE_THRESHOLD_MS);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
     const updatedAtByIssueKey = await loadLivenessDependencyUpdatedAtByIssue(findings);
@@ -3845,6 +3929,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
+      skippedTooRecent: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
@@ -3862,6 +3947,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const finding of findings) {
       if (!isLivenessFindingInsideAutoRecoveryLookback(finding, cutoff, updatedAtByIssueKey)) {
         result.skippedOutsideLookback += 1;
+        result.skipped += 1;
+        continue;
+      }
+      if (!isLivenessFindingStaleEnoughForEscalation(finding, staleCutoff, updatedAtByIssueKey)) {
+        result.skippedTooRecent += 1;
         result.skipped += 1;
         continue;
       }
