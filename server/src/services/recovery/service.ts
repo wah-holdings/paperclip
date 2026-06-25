@@ -3155,6 +3155,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .select({
           companyId: issues.companyId,
           id: issues.id,
+          parentId: issues.parentId,
           status: issues.status,
           originKind: issues.originKind,
           originId: issues.originId,
@@ -3190,11 +3191,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }),
     ]);
 
+    const issuesById = new Map(issueRows.map((issue) => [issue.id, issue]));
+    const childIssueIdsByParentId = new Map<string, string[]>();
+    for (const issue of issueRows) {
+      if (!issue.parentId) continue;
+      const children = childIssueIdsByParentId.get(issue.parentId) ?? [];
+      children.push(issue.id);
+      childIssueIdsByParentId.set(issue.parentId, children);
+    }
+
+    function recoveryCoverageForIssueTree(companyId: string, rootIssueId: string | null | undefined, status: string) {
+      if (!rootIssueId || issuesById.get(rootIssueId)?.companyId !== companyId) return [];
+      const entries: Array<{ companyId: string; issueId: string; status: string }> = [];
+      const seen = new Set<string>();
+      const queue = [rootIssueId];
+      while (queue.length > 0) {
+        const issueId = queue.shift()!;
+        if (seen.has(issueId)) continue;
+        seen.add(issueId);
+        entries.push({ companyId, issueId, status });
+        for (const childId of childIssueIdsByParentId.get(issueId) ?? []) {
+          queue.push(childId);
+        }
+      }
+      return entries;
+    }
+
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
+      const parentCoverage = recoveryCoverageForIssueTree(row.companyId, row.parentId, row.status);
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
         const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
         if (!parsed || parsed.companyId !== row.companyId) return [];
         return [
+          ...parentCoverage,
           {
             companyId: row.companyId,
             issueId: parsed.issueId,
@@ -3210,11 +3239,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const issueId = readNonEmptyString(row.originId);
       if (!issueId) return [];
-      return [{
-        companyId: row.companyId,
-        issueId,
-        status: row.status,
-      }];
+      return [
+        ...parentCoverage,
+        {
+          companyId: row.companyId,
+          issueId,
+          status: row.status,
+        },
+      ];
     });
 
     return classifyIssueGraphLiveness({

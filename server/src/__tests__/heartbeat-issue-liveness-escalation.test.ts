@@ -370,6 +370,74 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(1);
   });
 
+  it("treats an ancestor-epic liveness card as recovery coverage for descendant blockers", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const epicIssueId = randomUUID();
+    const existingEscalationId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: epicIssueId,
+      companyId,
+      title: "Ancestor delivery epic",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 6,
+      identifier: `${issuePrefix}-6`,
+      createdAt: issueTimestamp,
+      updatedAt: issueTimestamp,
+    });
+    await db
+      .update(issues)
+      .set({ parentId: epicIssueId })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(issues).values({
+      id: existingEscalationId,
+      companyId,
+      title: "Ancestor epic operator liveness card",
+      status: "todo",
+      priority: "high",
+      parentId: epicIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 7,
+      identifier: `${issuePrefix}-7`,
+      originKind: "harness_liveness_escalation",
+      originId: [
+        "harness_liveness",
+        companyId,
+        epicIssueId,
+        "blocked_by_unassigned_issue",
+        epicIssueId,
+      ].join(":"),
+      createdAt: issueTimestamp,
+      updatedAt: issueTimestamp,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      id: existingEscalationId,
+      parentId: epicIssueId,
+    });
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId)).toEqual([blockerIssueId]);
+  });
+
   it("keeps active invalid_review_participant recoveries from being retired", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

@@ -2761,10 +2761,34 @@ async function listIssueBlockedInboxAttentionMap(
     status: "pending",
   }));
 
+  const childIssueIdsByParentId = new Map<string, string[]>();
+  for (const issue of graphIssues) {
+    if (!issue.parentId) continue;
+    const children = childIssueIdsByParentId.get(issue.parentId) ?? [];
+    children.push(issue.id);
+    childIssueIdsByParentId.set(issue.parentId, children);
+  }
+
+  function addIssueTreeCoverage(entries: Array<{ companyId: string; issueId: string; status: string }>, rootIssueId: string | null | undefined, status: string) {
+    if (!rootIssueId || !issuesById.has(rootIssueId)) return;
+    const seen = new Set<string>();
+    const queue = [rootIssueId];
+    while (queue.length > 0) {
+      const issueId = queue.shift()!;
+      if (seen.has(issueId)) continue;
+      seen.add(issueId);
+      entries.push({ companyId, issueId, status });
+      for (const childId of childIssueIdsByParentId.get(issueId) ?? []) {
+        queue.push(childId);
+      }
+    }
+  }
+
   const openRecoveryIssues = graphIssues
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))
     .flatMap((issue) => {
       const entries = [{ companyId, issueId: issue.id, status: issue.status }];
+      addIssueTreeCoverage(entries, issue.parentId, issue.status);
       if (issue.originKind === "harness_liveness_escalation") {
         const parsed = parseIssueGraphLivenessIncidentKey(issue.originId);
         if (parsed?.companyId === companyId) {
