@@ -144,6 +144,8 @@ export const WATCHDOG_DEFAULT_MANDATE = [
   "Safety constraints (these always apply, even if custom instructions disagree):",
   "- Stay inside the watched subtree for source-work recovery. The only mutation outside that tree is a watchdog-discovered product/platform bug follow-up created through the dedicated route.",
   "- Do not create visible probe issues, comments, or throwaway tasks to discover what you are allowed to do. Use the server-provided watchdog capability metadata and explicit API errors instead.",
+  "- Only mutate same-owner watched-subtree issues. If a stopped root or leaf is owned by another agent, board user, or external party, do not attempt a cross-owner comment or status write; record it on the reusable watchdog issue as an operator-sweep candidate.",
+  "- Skip parked external wait gates when the issue is backlog and explicitly says wait-for-inbound, external gate, or no heartbeat polling.",
   "- Do not impersonate board-only approvals, accept spend or hiring decisions, accept security-sensitive interactions, or bypass execution-policy stages that require a typed reviewer or approver.",
   "- Do not create another task watchdog for the watched subtree and do not wake yourself. You operate exactly one reusable watchdog issue per watched issue.",
   "- Do not cross company boundaries or touch tasks in unrelated trees.",
@@ -172,6 +174,7 @@ type PaperclipWakeTaskWatchdogCapabilities = {
     watchedIssueId: string | null;
     watchedIssueIdentifier: string | null;
     watchdogIssueId: string | null;
+    requiredAssigneeAgentId: string | null;
     includeNonWatchdogDescendants: boolean;
     excludedOriginKinds: string[];
   } | null;
@@ -645,6 +648,7 @@ function normalizePaperclipWakeTaskWatchdogCapabilities(value: unknown): Papercl
     watchedIssueId: asString(targetScopeRaw.watchedIssueId, "").trim() || null,
     watchedIssueIdentifier: asString(targetScopeRaw.watchedIssueIdentifier, "").trim() || null,
     watchdogIssueId: asString(targetScopeRaw.watchdogIssueId, "").trim() || null,
+    requiredAssigneeAgentId: asString(targetScopeRaw.requiredAssigneeAgentId, "").trim() || null,
     includeNonWatchdogDescendants: asBoolean(targetScopeRaw.includeNonWatchdogDescendants, false),
     excludedOriginKinds: normalizeStringList(targetScopeRaw.excludedOriginKinds, MAX_WATCHDOG_CAPABILITY_ITEMS),
   };
@@ -652,6 +656,7 @@ function normalizePaperclipWakeTaskWatchdogCapabilities(value: unknown): Papercl
     targetScope.watchedIssueId ||
       targetScope.watchedIssueIdentifier ||
       targetScope.watchdogIssueId ||
+      targetScope.requiredAssigneeAgentId ||
       targetScope.includeNonWatchdogDescendants ||
       targetScope.excludedOriginKinds.length > 0,
   );
@@ -988,6 +993,9 @@ export function renderPaperclipWakePrompt(
         );
         if (scope.watchdogIssueId) {
           lines.push(`- Reusable watchdog issue: ${scope.watchdogIssueId}.`);
+        }
+        if (scope.requiredAssigneeAgentId) {
+          lines.push(`- Same-owner mutation requirement: target issue assignee must be ${scope.requiredAssigneeAgentId}.`);
         }
         if (scope.excludedOriginKinds.length > 0) {
           lines.push(`- Excluded origin kinds: ${scope.excludedOriginKinds.join(", ")}.`);

@@ -59,6 +59,7 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "companyId"
   | "identifier"
   | "title"
+  | "description"
   | "status"
   | "parentId"
   | "assigneeAgentId"
@@ -97,7 +98,7 @@ export type TaskWatchdogClassifierRelation = {
 
 export type TaskWatchdogClassifierConfig = Pick<
   IssueWatchdogSummary,
-  "companyId" | "issueId" | "lastReviewedFingerprint"
+  "companyId" | "issueId" | "watchdogAgentId" | "lastReviewedFingerprint"
 >;
 
 export type TaskWatchdogStoppedLeaf = {
@@ -246,6 +247,16 @@ function toEpochMs(value: Date | string | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function isParkedExternalGateLeaf(issue: Pick<TaskWatchdogClassifierIssue, "status" | "title" | "description">) {
+  if (issue.status !== "backlog") return false;
+  const text = `${issue.title}\n${issue.description ?? ""}`.toLowerCase();
+  return text.includes("no heartbeat polling") ||
+    text.includes("wait-for-inbound") ||
+    text.includes("wait for inbound") ||
+    text.includes("external gate") ||
+    text.includes("external-gate");
+}
+
 function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId: string) {
   return new Set(
     (paths ?? [])
@@ -307,6 +318,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const included: TaskWatchdogClassifierIssue[] = [];
   const visit = (issue: TaskWatchdogClassifierIssue) => {
     if (issue.originKind === TASK_WATCHDOG_ORIGIN_KIND) return;
+    if (issue.assigneeAgentId !== input.watchdog.watchdogAgentId) return;
     included.push(issue);
     for (const child of childrenByParentId.get(issue.id) ?? []) {
       visit(child);
@@ -382,6 +394,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const leaves = included
     .filter((issue) => (includedChildrenByParentId.get(issue.id) ?? []).length === 0)
     .sort((left, right) => left.id.localeCompare(right.id))
+    .filter((issue) => !isParkedExternalGateLeaf(issue))
     .map((issue) => ({
       issueId: issue.id,
       identifier: issue.identifier,
@@ -397,6 +410,13 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
+  if (leaves.length === 0) {
+    return {
+      state: "not_applicable",
+      reason: "Watched subtree only contains parked external wait gates that explicitly disable heartbeat polling.",
+      includedIssueIds: includedIds,
+    };
+  }
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
@@ -562,13 +582,14 @@ function watchdogWakeContext(input: {
           watchedIssueIdentifier: input.sourceIssue.identifier,
           watchdogIssueId: input.watchdogIssue.id,
           includeNonWatchdogDescendants: true,
+          requiredAssigneeAgentId: input.watchdog.watchdogAgentId,
           excludedOriginKinds: [TASK_WATCHDOG_ORIGIN_KIND],
         },
         operations: [
-          "comment_on_watched_subtree_issues",
-          "transition_watched_subtree_issue_status",
-          "reassign_watched_subtree_issues",
-          "create_child_issues_under_non_watchdog_watched_subtree",
+          "comment_on_same_owner_watched_subtree_issues",
+          "transition_same_owner_watched_subtree_issue_status",
+          "reassign_same_owner_watched_subtree_issues",
+          "create_child_issues_under_same_owner_non_watchdog_watched_subtree",
           "create_product_bug_followups_outside_watched_subtree",
           "resolve_eligible_request_confirmation_plan_interactions",
           "update_reusable_watchdog_issue",
@@ -577,6 +598,7 @@ function watchdogWakeContext(input: {
           "create_visible_probe_issues_or_throwaway_tasks",
           "create_product_bug_followups_as_source_tree_children",
           "mutate_task_watchdog_descendants",
+          "mutate_cross_owner_watched_subtree_issues",
           "mutate_outside_watched_subtree",
           "resolve_board_only_or_security_sensitive_approvals",
           "create_nested_task_watchdogs",
@@ -728,6 +750,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           company_id,
           identifier,
           title,
+          description,
           status,
           parent_id,
           assignee_agent_id,
@@ -746,6 +769,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.company_id,
           child.identifier,
           child.title,
+          child.description,
           child.status,
           child.parent_id,
           child.assignee_agent_id,
@@ -766,6 +790,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         company_id AS "companyId",
         identifier,
         title,
+        description,
         status,
         parent_id AS "parentId",
         assignee_agent_id AS "assigneeAgentId",

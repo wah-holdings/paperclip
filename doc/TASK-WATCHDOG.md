@@ -106,7 +106,7 @@ On wake, the watchdog agent reads a fixed default mandate plus your custom instr
 
 The mandate also enforces safety constraints that custom instructions **cannot override**:
 
-- Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants.
+- Stay inside the same-owner portion of the watched subtree. No cross-company mutations, no cross-owner source issue mutations, and no mutations outside the watched issue and its non-watchdog descendants.
 - No impersonating board-only approvals, accepting spend or hiring decisions, accepting security-sensitive interactions, or bypassing execution-policy stages that require a typed reviewer or approver.
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
@@ -129,15 +129,16 @@ What custom instructions cannot do: grant authority outside the watched subtree,
 
 ## Scope enforcement
 
-Every watchdog-originated mutation is gated by a server-side scope check derived from the agent run's `contextSnapshot.taskWatchdog` field. The check resolves to a `{ kind: "watchdog", watchdogId, companyId, watchedIssueId, watchdogIssueId }` envelope and rejects:
+Every watchdog-originated mutation is gated by a server-side scope check derived from the agent run's `contextSnapshot.taskWatchdog` field. The check resolves to a `{ kind: "watchdog", watchdogId, companyId, watchedIssueId, watchdogIssueId, watchdogAgentId }` envelope and rejects:
 
 - mutations on issues outside the watched subtree (parent-chain walk, depth-limited)
 - mutations on issues whose company id does not match the watchdog's company
+- mutations on source-tree issues not assigned to the watchdog agent
 - attempts to resolve interactions other than eligible task-level `request_confirmation` plan confirmations (see SPEC §9.9 for eligibility)
 - changes to the watchdog configuration itself (a watchdog cannot edit its own row or create another watchdog)
 - direct edits to active-run output or execution-policy decisions that require a typed participant
 
-The check is wired into the issue update, status change, blocker, assignment, and interaction routes. Any disallowed mutation is rejected at the route layer; the watchdog agent must take a different path (comment, in-subtree follow-up issue, leave a valid waiting state, escalate to a human owner).
+The check is wired into the issue update, status change, blocker, assignment, comment, and interaction routes. Any disallowed mutation is rejected at the route layer; the watchdog agent must take a different path (use its reusable review issue, leave a valid waiting state, or escalate to a human owner).
 
 ---
 
