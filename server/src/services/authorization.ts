@@ -1292,6 +1292,17 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      if (
+        resource?.status === "in_review" &&
+        resource.assigneeAgentId &&
+        await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor manages the in-review issue assignee in the reporting chain.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&

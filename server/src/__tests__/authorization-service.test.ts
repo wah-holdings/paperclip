@@ -73,6 +73,7 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    status?: string;
   } = {},
 ) {
   return db
@@ -81,7 +82,7 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: (input.status ?? "todo") as "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
@@ -1186,5 +1187,44 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: true,
       grant: { permissionKey: "tasks:assign" },
     });
+  });
+
+  it("allows a manager agent to comment and mutate a subordinate's in_review issue", async () => {
+    const company = await createCompany(db, "ManagerInReview");
+    const managerAgent = await createAgent(db, company.id, { role: "ceo" });
+    const subordinateAgent = await createAgent(db, company.id, { role: "engineer", reportsTo: managerAgent.id });
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+
+    const inReviewIssue = await createIssue(db, company.id, {
+      title: "In-review subordinate issue",
+      assigneeAgentId: subordinateAgent.id,
+      status: "in_review",
+    });
+
+    const authorization = authorizationService(db);
+    const managerActor = { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const peerActor = { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: inReviewIssue.id,
+      projectId: inReviewIssue.projectId,
+      assigneeAgentId: subordinateAgent.id,
+      status: "in_review",
+    } as const;
+
+    // Manager can comment on subordinate's in_review issue
+    await expect(authorization.decide({ actor: managerActor, action: "issue:comment", resource }))
+      .resolves.toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+    // Manager can mutate (PATCH status) a subordinate's in_review issue
+    await expect(authorization.decide({ actor: managerActor, action: "issue:mutate", resource }))
+      .resolves.toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+    // Peer agent cannot mutate or comment on a non-subordinate's in_review issue
+    await expect(authorization.decide({ actor: peerActor, action: "issue:mutate", resource }))
+      .resolves.toMatchObject({ allowed: false });
+    await expect(authorization.decide({ actor: peerActor, action: "issue:comment", resource }))
+      .resolves.toMatchObject({ allowed: false });
   });
 });
