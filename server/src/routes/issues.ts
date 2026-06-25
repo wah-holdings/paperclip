@@ -1991,14 +1991,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
-    // watched subtree. This must be evaluated before the base assignee-ownership
-    // boundary below: that boundary denies an agent mutating an issue owned by a
-    // different agent, which is exactly the watchdog's primary job
-    // (SPEC-implementation §9.9 — comment, transition, reassign within the
-    // watched subtree). The watchdog scope can only widen access to the watched
-    // subtree; downstream status-transition, assignment, recovery, and budget
-    // guards in the route handlers still apply.
+    // Task-watchdog runs receive a scoped grant for the reusable watchdog issue
+    // and same-owner issues inside the watched subtree. This is evaluated before
+    // the base ownership boundary so a watchdog can act from its review context,
+    // while still preventing cross-owner source-tree mutations.
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
     if (watchdogScope.kind !== "none") {
       const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, watchdogScope, issue);

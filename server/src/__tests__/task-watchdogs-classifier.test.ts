@@ -12,6 +12,7 @@ function issue(overrides: Partial<TaskWatchdogClassifierIssue> = {}): TaskWatchd
     companyId,
     identifier: "PAP-1",
     title: "Source",
+    description: null,
     status: "todo",
     parentId: null,
     assigneeAgentId: "agent-1",
@@ -27,6 +28,7 @@ function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtr
     watchdog: {
       companyId,
       issueId: sourceId,
+      watchdogAgentId: "agent-1",
       lastReviewedFingerprint: null,
     },
     issues: [issue()],
@@ -82,6 +84,7 @@ describe("task watchdog subtree classifier", () => {
       watchdog: {
         companyId,
         issueId: sourceId,
+        watchdogAgentId: "agent-1",
         lastReviewedFingerprint: stopped.stopFingerprint,
       },
       issues: [issue({ status: "blocked" })],
@@ -119,6 +122,44 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("stopped");
     expect(result.includedIssueIds).toEqual([sourceId]);
+  });
+
+  it("excludes cross-owner issues from watched subtree scans", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "done" }),
+        issue({
+          id: childId,
+          identifier: "PAP-2",
+          title: "Other owner child",
+          parentId: sourceId,
+          assigneeAgentId: "agent-2",
+          status: "blocked",
+        }),
+      ],
+    });
+
+    expect(result.state).toBe("stopped");
+    expect(result.includedIssueIds).toEqual([sourceId]);
+    if (result.state !== "stopped") return;
+    expect(result.stoppedLeaves.map((leaf) => leaf.issueId)).toEqual([sourceId]);
+  });
+
+  it("skips parked external wait gates that explicitly disable heartbeat polling", () => {
+    const result = classify({
+      issues: [
+        issue({
+          status: "backlog",
+          title: "Vendor response wait",
+          description: "External gate: wait-for-inbound. No heartbeat polling.",
+        }),
+      ],
+    });
+
+    expect(result).toMatchObject({
+      state: "not_applicable",
+      reason: expect.stringContaining("parked external wait gates"),
+    });
   });
 
   it("defers a stopped verdict for an issue created inside the first-run grace window", () => {
@@ -188,6 +229,7 @@ describe("task watchdog subtree classifier", () => {
       watchdog: {
         companyId,
         issueId: watchdogId,
+        watchdogAgentId: "agent-1",
         lastReviewedFingerprint: null,
       },
       issues: [
