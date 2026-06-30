@@ -1138,6 +1138,74 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     );
   });
 
+  it("recovers a uniquely matching one-character-truncated UUID through getById", async () => {
+    const companyId = randomUUID();
+    const issueId = "a1b6519c-152c-42ae-aaf1-0b3be97092cf";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PCBUG",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 7710,
+      identifier: "PCBUG-7710",
+      title: "Staging QA handoff",
+      status: "blocked",
+      priority: "critical",
+      createdByUserId: "user-1",
+    });
+
+    const issue = await svc.getById("a1b6519c-152c-42ae-aaf1-0b3be97092c");
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        identifier: "PCBUG-7710",
+      }),
+    );
+  });
+
+  it("does not guess when a one-character-truncated UUID is ambiguous", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PCAMB",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: "a1b6519c-152c-42ae-aaf1-0b3be97092c0",
+        companyId,
+        issueNumber: 1,
+        identifier: "PCAMB-1",
+        title: "First ambiguous issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: "user-1",
+      },
+      {
+        id: "a1b6519c-152c-42ae-aaf1-0b3be97092cf",
+        companyId,
+        issueNumber: 2,
+        identifier: "PCAMB-2",
+        title: "Second ambiguous issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: "user-1",
+      },
+    ]);
+
+    await expect(svc.getById("a1b6519c-152c-42ae-aaf1-0b3be97092c")).resolves.toBeNull();
+  });
+
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });

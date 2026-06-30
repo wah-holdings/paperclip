@@ -105,6 +105,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ONE_CHAR_TRUNCATED_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{11}$/i;
 const DELETED_ISSUE_COMMENT_BODY = "";
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -3285,6 +3286,18 @@ export function issueService(db: Db) {
     return enriched;
   }
 
+  async function getIssueByOneCharTruncatedUuid(id: string) {
+    if (!ONE_CHAR_TRUNCATED_UUID_RE.test(id)) return null;
+    const rows = await db
+      .select()
+      .from(issues)
+      .where(sql<boolean>`${issues.id}::text LIKE ${`${id}%`}`)
+      .limit(2);
+    if (rows.length !== 1) return null;
+    const [enriched] = await withIssueLabels(db, [rows[0]!]);
+    return enriched;
+  }
+
   async function getIssueByIdentifier(identifier: string) {
     const row = await db
       .select()
@@ -4486,6 +4499,8 @@ export function issueService(db: Db) {
         return getIssueByIdentifier(identifier);
       }
       if (!isUuidLike(id)) {
+        const issue = await getIssueByOneCharTruncatedUuid(id);
+        if (issue) return issue;
         return null;
       }
       return getIssueByUuid(id);
