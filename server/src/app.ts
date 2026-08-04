@@ -47,6 +47,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { githubReviewWebhookRoutes } from "./routes/github-review-webhooks.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -218,6 +219,7 @@ export async function createApp(
     }),
   );
   api.use(openApiRoutes());
+  api.use(githubReviewWebhookRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));

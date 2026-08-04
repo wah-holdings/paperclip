@@ -30,7 +30,7 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: ["req.headers.authorization", "req.headers.x-hub-signature-256"],
 }, pino.transport({
   targets: [
     {
@@ -65,6 +65,9 @@ export const httpLogger = pinoHttp({
     return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
   },
   customProps(req, res) {
+    if ((req as typeof req & { paperclipSuppressBodyLog?: boolean }).paperclipSuppressBodyLog) {
+      return {};
+    }
     if (res.statusCode >= 400) {
       const ctx = (res as any).__errorContext;
       if (ctx) {
